@@ -1,8 +1,7 @@
-import styled from "styled-components";
-import { Link } from "react-router-dom";
+import { Link } from 'react-router-dom';
+import styled from 'styled-components';
 
 export const Button = styled(Link)`
-	height: 100%;
 	border: 2px solid #2f80ed;
 	box-sizing: border-box;
 	border-radius: 10px;

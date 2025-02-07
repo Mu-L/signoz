@@ -1,80 +1,35 @@
-import { ActionTypes } from "./types";
-import { Moment } from "moment";
+import { Time } from 'container/TopNav/DateTimeSelection/config';
+import {
+	CustomTimeType,
+	Time as TimeV2,
+} from 'container/TopNav/DateTimeSelectionV2/config';
+import GetMinMax from 'lib/getMinMax';
+import { Dispatch } from 'redux';
+import AppActions from 'types/actions';
+import { UPDATE_TIME_INTERVAL } from 'types/actions/globalTime';
 
-export type DateTimeRangeType = [Moment | null, Moment | null] | null;
+export const UpdateTimeInterval = (
+	interval: Time | TimeV2 | CustomTimeType,
+	dateTimeRange: [number, number] = [0, 0],
+): ((dispatch: Dispatch<AppActions>) => void) => (
+	dispatch: Dispatch<AppActions>,
+): void => {
+	const { maxTime, minTime } = GetMinMax(interval, dateTimeRange);
 
-export interface GlobalTime {
-	maxTime: number;
-	minTime: number;
-}
+	dispatch({
+		type: UPDATE_TIME_INTERVAL,
+		payload: {
+			maxTime,
+			minTime,
+			selectedTime: interval,
+		},
+	});
+};
 
-export interface updateTimeIntervalAction {
-	type: ActionTypes.updateTimeInterval;
-	payload: GlobalTime;
-}
-
-export const updateTimeInterval = (
-	interval: string,
-	datetimeRange?: [number, number],
-) => {
-	let maxTime: number = 0;
-	let minTime: number = 0;
-	// if interval string is custom, then datetimRange should be present and max & min time should be
-	// set directly based on that. Assuming datetimeRange values are in ms, and minTime is 0th element
-
-	switch (interval) {
-		case "1min":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 1 * 60 * 1000) * 1000000;
-			break;
-		case "5min":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 5 * 60 * 1000) * 1000000;
-			break;
-
-		case "15min":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 15 * 60 * 1000) * 1000000;
-			break;
-
-		case "30min":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 30 * 60 * 1000) * 1000000;
-			break;
-
-		case "1hr":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 1 * 60 * 60 * 1000) * 1000000;
-			break;
-
-		case "6hr":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 6 * 60 * 60 * 1000) * 1000000;
-			break;
-
-		case "1day":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 24 * 60 * 60 * 1000) * 1000000;
-			break;
-
-		case "1week":
-			maxTime = Date.now() * 1000000; // in nano sec
-			minTime = (Date.now() - 7 * 24 * 60 * 60 * 1000) * 1000000;
-			break;
-
-		case "custom":
-			if (datetimeRange !== undefined) {
-				maxTime = datetimeRange[1] * 1000000; // in nano sec
-				minTime = datetimeRange[0] * 1000000; // in nano sec
-			}
-			break;
-
-		default:
-			console.log("not found matching case");
-	}
-
-	return {
-		type: ActionTypes.updateTimeInterval,
-		payload: { maxTime: maxTime, minTime: minTime },
-	};
+export const GlobalTimeLoading = (): ((
+	dispatch: Dispatch<AppActions>,
+) => void) => (dispatch: Dispatch<AppActions>): void => {
+	dispatch({
+		type: 'GLOBAL_TIME_LOADING_START',
+	});
 };

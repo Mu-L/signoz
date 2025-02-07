@@ -1,22 +1,26 @@
-import { ActionTypes, Action, serviceMapStore } from "store/actions";
+import { Action, ActionTypes, ServiceMapStore } from 'store/actions';
 
-const initialState: serviceMapStore = {
+const initialState: ServiceMapStore = {
 	items: [],
-	services: [],
+	loading: true,
 };
 
-export const ServiceMapReducer = (state = initialState, action: Action) => {
+export const ServiceMapReducer = (
+	state = initialState,
+	action: Action,
+): ServiceMapStore => {
 	switch (action.type) {
 		case ActionTypes.getServiceMapItems:
 			return {
 				...state,
 				items: action.payload,
 			};
-		case ActionTypes.getServices:
+		case ActionTypes.serviceMapLoading: {
 			return {
 				...state,
-				services: action.payload,
+				loading: action.payload.loading,
 			};
+		}
 		default:
 			return state;
 	}
