@@ -2,6 +2,11 @@
 
 set -o errexit
 
+# Variables
+BASE_DIR="$(dirname "$(readlink -f "$0")")"
+DOCKER_STANDALONE_DIR="docker"
+DOCKER_SWARM_DIR="docker-swarm" # TODO: Add docker swarm support
+
 # Regular Colors
 Black='\033[0;30m'        # Black
 Red='\[\e[0;31m\]'        # Red
@@ -32,8 +37,17 @@ has_cmd() {
     command -v "$1" > /dev/null 2>&1
 }
 
+# Check if docker compose plugin is present
+has_docker_compose_plugin() {
+    docker compose version > /dev/null 2>&1
+}
+
 is_mac() {
     [[ $OSTYPE == darwin* ]]
+}
+
+is_arm64(){
+    [[ `uname -m` == 'arm64' || `uname -m` == 'aarch64' ]]
 }
 
 check_os() {
@@ -44,10 +58,20 @@ check_os() {
         return
     fi
 
+    if is_arm64; then
+        arch="arm64"
+        arch_official="aarch64"
+    else
+        arch="amd64"
+        arch_official="x86_64"
+    fi
+
+    platform=$(uname -s | tr '[:upper:]' '[:lower:]')
+
     os_name="$(cat /etc/*-release | awk -F= '$1 == "NAME" { gsub(/"/, ""); print $2; exit }')"
 
     case "$os_name" in
-        Ubuntu*)
+        Ubuntu*|Pop!_OS)
             desired_os=1
             os="ubuntu"
             package_manager="apt-get"
@@ -77,6 +101,11 @@ check_os() {
             os="centos"
             package_manager="yum"
             ;;
+        Rocky*)
+            desired_os=1
+            os="centos"
+            package_manager="yum"
+            ;;
         SLES*)
             desired_os=1
             os="sles"
@@ -98,7 +127,7 @@ check_os() {
 # The script should error out in case they aren't available
 check_ports_occupied() {
     local port_check_output
-    local ports_pattern="80|3000|8080"
+    local ports_pattern="3301|4317"
 
     if is_mac; then
         port_check_output="$(netstat -anp tcp | awk '$6 == "LISTEN" && $4 ~ /^.*\.('"$ports_pattern"')$/')"
@@ -112,19 +141,11 @@ check_ports_occupied() {
     fi
 
     if [[ -n $port_check_output ]]; then
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "port not available" } }'
-        URL="https://app.posthog.com/capture"
-        HEADER="Content-Type: application/json"
-
-        if has_curl; then
-            curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-        elif has_wget; then
-            wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-        fi
+        send_event "port_not_available"
 
         echo "+++++++++++ ERROR ++++++++++++++++++++++"
-        echo "SigNoz requires ports 80 & 443 to be open. Please shut down any other service(s) that may be running on these ports."
-        echo "You can run SigNoz on another port following this guide https://signoz.io/docs/deployment/docker#troubleshooting"
+        echo "SigNoz requires ports 3301 & 4317 to be open. Please shut down any other service(s) that may be running on these ports."
+        echo "You can run SigNoz on another port following this guide https://signoz.io/docs/install/troubleshooting/"
         echo "++++++++++++++++++++++++++++++++++++++++"
         echo ""
         exit 1
@@ -137,57 +158,48 @@ install_docker() {
 
 
     if [[ $package_manager == apt-get ]]; then
-        apt_cmd="sudo apt-get --yes --quiet"
+        apt_cmd="$sudo_cmd apt-get --yes --quiet"
         $apt_cmd update
         $apt_cmd install software-properties-common gnupg-agent
-        curl -fsSL "https://download.docker.com/linux/$os/gpg" | sudo apt-key add -
-        sudo add-apt-repository \
-            "deb [arch=amd64] https://download.docker.com/linux/$os $(lsb_release -cs) stable"
+        curl -fsSL "https://download.docker.com/linux/$os/gpg" | $sudo_cmd apt-key add -
+        $sudo_cmd add-apt-repository \
+            "deb [arch=$arch] https://download.docker.com/linux/$os $(lsb_release -cs) stable"
         $apt_cmd update
         echo "Installing docker"
         $apt_cmd install docker-ce docker-ce-cli containerd.io
     elif [[ $package_manager == zypper ]]; then
-        zypper_cmd="sudo zypper --quiet --no-gpg-checks --non-interactive"
+        zypper_cmd="$sudo_cmd zypper --quiet --no-gpg-checks --non-interactive"
         echo "Installing docker"
         if [[ $os == sles ]]; then
             os_sp="$(cat /etc/*-release | awk -F= '$1 == "VERSION_ID" { gsub(/"/, ""); print $2; exit }')"
             os_arch="$(uname -i)"
-            sudo SUSEConnect -p sle-module-containers/$os_sp/$os_arch -r ''
+            SUSEConnect -p sle-module-containers/$os_sp/$os_arch -r ''
         fi
         $zypper_cmd install docker docker-runc containerd
-        sudo systemctl enable docker.service
+        $sudo_cmd systemctl enable docker.service
     elif [[ $package_manager == yum && $os == 'amazon linux' ]]; then
         echo
         echo "Amazon Linux detected ... "
         echo
-        sudo yum install docker
-        sudo service docker start
+        # yum install docker
+        # service docker start
+        $sudo_cmd yum install -y amazon-linux-extras
+        $sudo_cmd amazon-linux-extras enable docker
+        $sudo_cmd yum install -y docker
     else
 
-        yum_cmd="sudo yum --assumeyes --quiet"
+        yum_cmd="$sudo_cmd yum --assumeyes --quiet"
         $yum_cmd install yum-utils
-        sudo yum-config-manager --add-repo https://download.docker.com/linux/$os/docker-ce.repo
+        $sudo_cmd yum-config-manager --add-repo https://download.docker.com/linux/$os/docker-ce.repo
         echo "Installing docker"
         $yum_cmd install docker-ce docker-ce-cli containerd.io
-
     fi
-
 }
-install_docker_machine() {
 
-    echo "\nInstalling docker machine ..."
-
-    if [[ $os == "Mac" ]];then
-        curl -sL https://github.com/docker/machine/releases/download/v0.16.2/docker-machine-`uname -s`-`uname -m` >/usr/local/bin/docker-machine
-        chmod +x /usr/local/bin/docker-machine
-    else
-        curl -sL https://github.com/docker/machine/releases/download/v0.16.2/docker-machine-`uname -s`-`uname -m` >/tmp/docker-machine
-        chmod +x /tmp/docker-machine
-        sudo cp /tmp/docker-machine /usr/local/bin/docker-machine
-
-    fi
-
-
+compose_version () {
+    local compose_version
+    compose_version="$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)"
+    echo "${compose_version:-v2.18.1}"
 }
 
 install_docker_compose() {
@@ -195,22 +207,16 @@ install_docker_compose() {
         if [[ ! -f /usr/bin/docker-compose ]];then
             echo "++++++++++++++++++++++++"
             echo "Installing docker-compose"
-            sudo curl -L "https://github.com/docker/compose/releases/download/1.26.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-            sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+            compose_url="https://github.com/docker/compose/releases/download/$(compose_version)/docker-compose-$platform-$arch_official"
+            echo "Downloading docker-compose from $compose_url"
+            $sudo_cmd curl -L "$compose_url" -o /usr/local/bin/docker-compose
+            $sudo_cmd chmod +x /usr/local/bin/docker-compose
+            $sudo_cmd ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
             echo "docker-compose installed!"
             echo ""
         fi
     else
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "Docker Compose not found", "setup_type": "'"$setup_type"'" } }'
-        URL="https://app.posthog.com/capture"
-        HEADER="Content-Type: application/json"
-
-        if has_curl; then
-            curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-        elif has_wget; then
-            wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-        fi
+        send_event "docker_compose_not_found"
 
         echo "+++++++++++ IMPORTANT READ ++++++++++++++++++++++"
         echo "docker-compose not found! Please install docker-compose first and then continue with this installation."
@@ -221,35 +227,31 @@ install_docker_compose() {
 }
 
 start_docker() {
-    echo "Starting Docker ..."
-    if [ $os = "Mac" ]; then
+    echo -e "🐳 Starting Docker ...\n"
+    if [[ $os == "Mac" ]]; then
         open --background -a Docker && while ! docker system info > /dev/null 2>&1; do sleep 1; done
-    else 
-        if ! sudo systemctl is-active docker.service > /dev/null; then
+    else
+        if ! $sudo_cmd systemctl is-active docker.service > /dev/null; then
             echo "Starting docker service"
-            sudo systemctl start docker.service
+            $sudo_cmd systemctl start docker.service
+        fi
+        if [[ -z $sudo_cmd ]]; then
+            if ! docker ps > /dev/null && true; then
+                request_sudo
+            fi
         fi
     fi
 }
+
 wait_for_containers_start() {
     local timeout=$1
 
     # The while loop is important because for-loops don't work for dynamic values
     while [[ $timeout -gt 0 ]]; do
-        status_code="$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/services/list || true)"
+        status_code="$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:3301/api/v1/health?live=1" || true)"
         if [[ status_code -eq 200 ]]; then
             break
         else
-            if [ $setup_type == 'druid' ]; then
-                SUPERVISORS="$(curl -so -  http://localhost:8888/druid/indexer/v1/supervisor)"
-                LEN_SUPERVISORS="${#SUPERVISORS}"
-
-                if [[ LEN_SUPERVISORS -ne 19 && $timeout -eq 50 ]];then
-                    echo -e "\n🟠 Supervisors taking time to start ⏳ ... let's wait for some more time ⏱️\n\n"
-                    sudo docker-compose -f ./docker/druid-kafka-setup/docker-compose-tiny.yaml up -d
-                fi
-            fi
-
             echo -ne "Waiting for all containers to start. This check will timeout in $timeout seconds ...\r\c"
         fi
         ((timeout--))
@@ -260,38 +262,31 @@ wait_for_containers_start() {
 }
 
 bye() {  # Prints a friendly good bye message and exits the script.
-    if [ "$?" -ne 0 ]; then
+    # Switch back to the original directory
+    popd > /dev/null 2>&1
+    if [[ "$?" -ne 0 ]]; then
         set +o errexit
 
         echo "🔴 The containers didn't seem to start correctly. Please run the following command to check containers that may have errored out:"
         echo ""
-        if [ $setup_type == 'clickhouse' ]; then
-            echo -e "sudo docker-compose -f docker/clickhouse-setup/docker-compose.yaml ps -a"
-        else   
-            echo -e "sudo docker-compose -f docker/druid-kafka-setup/docker-compose-tiny.yaml ps -a"
-        fi
-        # echo "Please read our troubleshooting guide https://signoz.io/docs/deployment/docker#troubleshooting"
-        echo "or reach us on SigNoz for support https://join.slack.com/t/signoz-community/shared_invite/zt-lrjknbbp-J_mI13rlw8pGF4EWBnorJA"
+        echo -e "cd ${DOCKER_STANDALONE_DIR}"
+        echo -e "$sudo_cmd $docker_compose_cmd ps -a"
+
+        echo "Please read our troubleshooting guide https://signoz.io/docs/install/troubleshooting/"
+        echo "or reach us for support in #help channel in our Slack Community https://signoz.io/slack"
         echo "++++++++++++++++++++++++++++++++++++++++"
 
-        echo -e "\n📨 Please share your email to receive support with the installation"
-        read -rp 'Email: ' email
-
-        while [[ $email == "" ]]
-        do
+        if [[ $email == "" ]]; then
+            echo -e "\n📨 Please share your email to receive support with the installation"
             read -rp 'Email: ' email
-        done
 
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Support", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "email": "'"$email"'", "setup_type": "'"$setup_type"'" } }'
-        URL="https://app.posthog.com/capture"
-        HEADER="Content-Type: application/json"
-
-
-        if has_curl; then
-            curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-        elif has_wget; then
-            wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
+            while [[ $email == "" ]]
+            do
+                read -rp 'Email: ' email
+            done
         fi
+
+        send_event "installation_support"
 
 
         echo ""
@@ -300,127 +295,212 @@ bye() {  # Prints a friendly good bye message and exits the script.
     fi
 }
 
+request_sudo() {
+    if hash sudo 2>/dev/null; then
+        echo -e "\n\n🙇 We will need sudo access to complete the installation."
+        if (( $EUID != 0 )); then
+            sudo_cmd="sudo"
+            echo -e "Please enter your sudo password, if prompted."
+            if ! $sudo_cmd -l | grep -e "NOPASSWD: ALL" > /dev/null && ! $sudo_cmd -v; then
+                echo "Need sudo privileges to proceed with the installation."
+                exit 1;
+            fi
 
+            echo -e "Got it! Thanks!! 🙏\n"
+            echo -e "Okay! We will bring up the SigNoz cluster from here 🚀\n"
+        fi
+	fi
+}
+
+echo ""
 echo -e "👋 Thank you for trying out SigNoz! "
 echo ""
 
+sudo_cmd=""
+docker_compose_cmd=""
+
+# Check sudo permissions
+if (( $EUID != 0 )); then
+    echo "🟡 Running installer with non-sudo permissions."
+    echo "   In case of any failure or prompt, please consider running the script with sudo privileges."
+    echo ""
+else
+    sudo_cmd="sudo"
+fi
 
 # Checking OS and assigning package manager
 desired_os=0
 os=""
-echo -e "Detecting your OS ..."
+email=""
+echo -e "🌏 Detecting your OS ...\n"
 check_os
 
-SIGNOZ_INSTALLATION_ID=$(curl -s 'https://api64.ipify.org')
-
-echo ""
-
-echo -e "👉 ${RED}Two ways to go forward\n"  
-echo -e "${RED}1) ClickHouse as database (default)\n"  
-echo -e "${RED}2) Kafka + Druid setup to handle scale (recommended for production use)\n"  
-read -p "⚙️  Enter your preference (1/2):" choice_setup 
-
-while [[ $choice_setup != "1"   &&  $choice_setup != "2" && $choice_setup != "" ]]
-do
-    # echo $choice_setup
-    echo -e "\n❌ ${CYAN}Please enter either 1 or 2"
-    read -p "⚙️  Enter your preference (1/2):  " choice_setup 
-    # echo $choice_setup
-done
-
-if [[ $choice_setup == "1" || $choice_setup == "" ]];then
-    setup_type='clickhouse'
-else
-    setup_type='druid'
+# Obtain unique installation id
+# sysinfo="$(uname -a)"
+# if [[ $? -ne 0 ]]; then
+#     uuid="$(uuidgen)"
+#     uuid="${uuid:-$(cat /proc/sys/kernel/random/uuid)}"
+#     sysinfo="${uuid:-$(cat /proc/sys/kernel/random/uuid)}"
+# fi
+if ! sysinfo="$(uname -a)"; then
+    uuid="$(uuidgen)"
+    uuid="${uuid:-$(cat /proc/sys/kernel/random/uuid)}"
+    sysinfo="${uuid:-$(cat /proc/sys/kernel/random/uuid)}"
 fi
 
-echo -e "\n✅ ${CYAN}You have chosen: ${setup_type} setup\n"
+digest_cmd=""
+if hash shasum 2>/dev/null; then
+    digest_cmd="shasum -a 256"
+elif hash sha256sum 2>/dev/null; then
+    digest_cmd="sha256sum"
+elif hash openssl 2>/dev/null; then
+    digest_cmd="openssl dgst -sha256"
+fi
+
+if [[ -z $digest_cmd ]]; then
+    SIGNOZ_INSTALLATION_ID="$sysinfo"
+else
+    SIGNOZ_INSTALLATION_ID=$(echo "$sysinfo" | $digest_cmd | grep -E -o '[a-zA-Z0-9]{64}')
+fi
+
+setup_type='clickhouse'
 
 # Run bye if failure happens
 trap bye EXIT
 
+URL="https://api.segment.io/v1/track"
+HEADER_1="Content-Type: application/json"
+HEADER_2="Authorization: Basic OWtScko3b1BDR1BFSkxGNlFqTVBMdDVibGpGaFJRQnI="
 
-DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Started", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "setup_type": "'"$setup_type"'" } }'
-URL="https://app.posthog.com/capture"
-HEADER="Content-Type: application/json"
+send_event() {
+    error=""
 
-if has_curl; then
-    curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-elif has_wget; then
-    wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-fi
+    case "$1" in
+        'install_started')
+            event="Installation Started"
+            ;;
+        'os_not_supported')
+            event="Installation Error"
+            error="OS Not Supported"
+            ;;
+        'docker_not_installed')
+            event="Installation Error"
+            error="Docker not installed"
+            ;;
+        'docker_compose_not_found')
+            event="Installation Error"
+            event="Docker Compose not found"
+            ;;
+        'port_not_available')
+            event="Installation Error"
+            error="port not available"
+            ;;
+        'installation_error_checks')
+            event="Installation Error - Checks"
+            error="Containers not started"
+            others='"data": "some_checks",'
+            ;;
+        'installation_support')
+            event="Installation Support"
+            others='"email": "'"$email"'",'
+            ;;
+        'installation_success')
+            event="Installation Success"
+            ;;
+        'identify_successful_installation')
+            event="Identify Successful Installation"
+            others='"email": "'"$email"'",'
+            ;;
+        *)
+            print_error "unknown event type: $1"
+            exit 1
+            ;;
+    esac
 
-
-if [[ $desired_os -eq 0 ]];then
-    DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "OS Not Supported", "setup_type": "'"$setup_type"'" } }'
-    URL="https://app.posthog.com/capture"
-    HEADER="Content-Type: application/json"
-
-    if has_curl; then
-        curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-    elif has_wget; then
-        wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
+    if [[ "$error" != "" ]]; then
+        error='"error": "'"$error"'", '
     fi
 
-fi
+    DATA='{ "anonymousId": "'"$SIGNOZ_INSTALLATION_ID"'", "event": "'"$event"'", "properties": { "os": "'"$os"'", '"$error $others"' "setup_type": "'"$setup_type"'" } }'
 
-# check_ports_occupied
+    if has_curl; then
+        curl -sfL -d "$DATA" --header "$HEADER_1" --header "$HEADER_2" "$URL" > /dev/null 2>&1
+    elif has_wget; then
+        wget -q --post-data="$DATA" --header "$HEADER_1" --header "$HEADER_2" "$URL" > /dev/null 2>&1
+    fi
+}
+
+send_event "install_started"
+
+if [[ $desired_os -eq 0 ]]; then
+    send_event "os_not_supported"
+fi
 
 # Check is Docker daemon is installed and available. If not, the install & start Docker for Linux machines. We cannot automatically install Docker Desktop on Mac OS
 if ! is_command_present docker; then
+
     if [[ $package_manager == "apt-get" || $package_manager == "zypper" || $package_manager == "yum" ]]; then
+        request_sudo
         install_docker
-    else
+        # enable docker without sudo from next reboot
+        sudo usermod -aG docker "${USER}"
+    elif is_mac; then
         echo ""
         echo "+++++++++++ IMPORTANT READ ++++++++++++++++++++++"
         echo "Docker Desktop must be installed manually on Mac OS to proceed. Docker can only be installed automatically on Ubuntu / openSUSE / SLES / Redhat / Cent OS"
         echo "https://docs.docker.com/docker-for-mac/install/"
         echo "++++++++++++++++++++++++++++++++++++++++++++++++"
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "Docker not installed", "setup_type": "'"$setup_type"'" } }'
-        URL="https://app.posthog.com/capture"
-        HEADER="Content-Type: application/json"
 
-        if has_curl; then
-            curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-        elif has_wget; then
-            wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-        fi
+        send_event "docker_not_installed"
+        exit 1
+    else
+        echo ""
+        echo "+++++++++++ IMPORTANT READ ++++++++++++++++++++++"
+        echo "Docker must be installed manually on your machine to proceed. Docker can only be installed automatically on Ubuntu / openSUSE / SLES / Redhat / Cent OS"
+        echo "https://docs.docker.com/get-docker/"
+        echo "++++++++++++++++++++++++++++++++++++++++++++++++"
+
+        send_event "docker_not_installed"
         exit 1
     fi
 fi
 
+if has_docker_compose_plugin; then
+    echo "docker compose plugin is present, using it"
+    docker_compose_cmd="docker compose"
 # Install docker-compose
-if ! is_command_present docker-compose; then
-    install_docker_compose
+else
+    docker_compose_cmd="docker-compose"
+    if ! is_command_present docker-compose; then
+        request_sudo
+        install_docker_compose
+    fi
 fi
-
-
 
 start_docker
 
+# Switch to the Docker Standalone directory
+pushd "${BASE_DIR}/${DOCKER_STANDALONE_DIR}" > /dev/null 2>&1
 
-# sudo docker-compose -f ./docker/clickhouse-setup/docker-compose.yaml up -d --remove-orphans || true
-
-
-echo ""
-echo -e "\n🟡 Pulling the latest container images for SigNoz. To run as sudo it may ask for system password\n"
-if [ $setup_type == 'clickhouse' ]; then
-    sudo docker-compose -f ./docker/clickhouse-setup/docker-compose.yaml pull
-else
-    sudo docker-compose -f ./docker/druid-kafka-setup/docker-compose-tiny.yaml pull
+# check for open ports, if signoz is not installed
+if is_command_present docker-compose; then
+    if $sudo_cmd $docker_compose_cmd ps | grep "signoz-query-service" | grep -q "healthy" > /dev/null 2>&1; then
+        echo "SigNoz already installed, skipping the occupied ports check"
+    else
+        check_ports_occupied
+    fi
 fi
 
+echo ""
+echo -e "\n🟡 Pulling the latest container images for SigNoz.\n"
+$sudo_cmd $docker_compose_cmd pull
 
 echo ""
 echo "🟡 Starting the SigNoz containers. It may take a few minutes ..."
 echo
-# The docker-compose command does some nasty stuff for the `--detach` functionality. So we add a `|| true` so that the
+# The $docker_compose_cmd command does some nasty stuff for the `--detach` functionality. So we add a `|| true` so that the
 # script doesn't exit because this command looks like it failed to do it's thing.
-if [ $setup_type == 'clickhouse' ]; then
-    sudo docker-compose -f ./docker/clickhouse-setup/docker-compose.yaml up --detach --remove-orphans || true
-else
-    sudo docker-compose -f ./docker/druid-kafka-setup/docker-compose-tiny.yaml up --detach --remove-orphans || true
-fi
+$sudo_cmd $docker_compose_cmd up --detach --remove-orphans || true
 
 wait_for_containers_start 60
 echo ""
@@ -429,64 +509,45 @@ if [[ $status_code -ne 200 ]]; then
     echo "+++++++++++ ERROR ++++++++++++++++++++++"
     echo "🔴 The containers didn't seem to start correctly. Please run the following command to check containers that may have errored out:"
     echo ""
-    if [ $setup_type == 'clickhouse' ]; then
-        echo -e "sudo docker-compose -f docker/clickhouse-setup/docker-compose.yaml ps -a"
-    else
-        echo -e "sudo docker-compose -f docker/druid-kafka-setup/docker-compose-tiny.yaml ps -a"
-    fi
-    echo "Please read our troubleshooting guide https://signoz.io/docs/deployment/docker/#troubleshooting-of-common-issues"
-    echo "or reach us on SigNoz for support https://join.slack.com/t/signoz-community/shared_invite/zt-lrjknbbp-J_mI13rlw8pGF4EWBnorJA"
+
+    echo "cd ${DOCKER_STANDALONE_DIR}"
+    echo "$sudo_cmd $docker_compose_cmd ps -a"
+    echo ""
+
+    echo "Try bringing down the containers and retrying the installation"
+    echo "cd ${DOCKER_STANDALONE_DIR}"
+    echo "$sudo_cmd $docker_compose_cmd down -v"
+    echo ""
+
+    echo "Please read our troubleshooting guide https://signoz.io/docs/install/troubleshooting/"
+    echo "or reach us on SigNoz for support https://signoz.io/slack"
     echo "++++++++++++++++++++++++++++++++++++++++"
 
-    if [ $setup_type == 'clickhouse' ]; then
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error - Checks", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "Containers not started", "data": "some_checks", "setup_type": "'"$setup_type"'" } }'
-    else
-        SUPERVISORS="$(curl -so -  http://localhost:8888/druid/indexer/v1/supervisor)"
-
-        DATASOURCES="$(curl -so -  http://localhost:8888/druid/coordinator/v1/datasources)"
-
-        DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Error - Checks", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "error": "Containers not started", "SUPERVISORS": '"$SUPERVISORS"', "DATASOURCES": '"$DATASOURCES"', "setup_type": "'"$setup_type"'" } }'
-    fi
-
-    URL="https://app.posthog.com/capture"
-    HEADER="Content-Type: application/json"
-
-    if has_curl; then
-        curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-    elif has_wget; then
-        wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-    fi
-
+    send_event "installation_error_checks"
     exit 1
 
 else
-    DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Installation Success", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'"}, "setup_type": "'"$setup_type"'" }'
-    URL="https://app.posthog.com/capture"
-    HEADER="Content-Type: application/json"
+    send_event "installation_success"
 
-    if has_curl; then
-        curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-    elif has_wget; then
-        wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-    fi
     echo "++++++++++++++++++ SUCCESS ++++++++++++++++++++++"
     echo ""
     echo "🟢 Your installation is complete!"
     echo ""
-    echo -e "🟢 Your frontend is running on http://localhost:3000"
+    echo -e "🟢 Your frontend is running on http://localhost:3301"
     echo ""
+    echo "ℹ️  By default, retention period is set to 15 days for logs and traces, and 30 days for metrics."
+    echo -e "To change this, navigate to the General tab on the Settings page of SigNoz UI. For more details, refer to https://signoz.io/docs/userguide/retention-period \n"
 
-    if [ $setup_type == 'clickhouse' ]; then
-        echo "ℹ️  To bring down SigNoz and clean volumes : sudo docker-compose -f docker/clickhouse-setup/docker-compose.yaml down -v"
-    else
-        echo "ℹ️  To bring down SigNoz and clean volumes : sudo docker-compose -f docker/druid-kafka-setup/docker-compose-tiny.yaml down -v"
-    fi
+    echo "ℹ️  To bring down SigNoz and clean volumes:"
+    echo ""
+    echo "cd ${DOCKER_STANDALONE_DIR}"
+    echo "$sudo_cmd $docker_compose_cmd down -v"
 
     echo ""
     echo "+++++++++++++++++++++++++++++++++++++++++++++++++"
     echo ""
-    echo "👉 Need help Getting Started?"
-    echo -e "Join us on Slack https://join.slack.com/t/signoz-community/shared_invite/zt-lrjknbbp-J_mI13rlw8pGF4EWBnorJA"
+    echo "👉 Need help in Getting Started?"
+    echo -e "Join us on Slack https://signoz.io/slack"
     echo ""
     echo -e "\n📨 Please share your email to receive support & updates about SigNoz!"
     read -rp 'Email: ' email
@@ -495,17 +556,8 @@ else
     do
         read -rp 'Email: ' email
     done
-    
-    DATA='{ "api_key": "H-htDCae7CR3RV57gUzmol6IAKtm5IMCvbcm_fwnL-w", "type": "capture", "event": "Identify Successful Installation", "distinct_id": "'"$SIGNOZ_INSTALLATION_ID"'", "properties": { "os": "'"$os"'", "email": "'"$email"'", "setup_type": "'"$setup_type"'" } }'
-    URL="https://app.posthog.com/capture"
-    HEADER="Content-Type: application/json"
 
-    if has_curl; then
-        curl -sfL -d "$DATA" --header "$HEADER" "$URL" > /dev/null 2>&1
-    elif has_wget; then
-        wget -q --post-data="$DATA" --header="$HEADER" "$URL" > /dev/null 2>&1
-    fi
-
+    send_event "identify_successful_installation"
 fi
 
 echo -e "\n🙏 Thank you!\n"
