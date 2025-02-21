@@ -6,7 +6,7 @@
 
 **Building image**
 
-``docker-compose up`
+``docker compose up`
 / This will also run
 
 or
@@ -19,7 +19,7 @@ docker tag signoz/frontend:latest 7296823551/signoz:latest
 ```
 
 ```
-docker-compose up
+docker compose up
 ```
 
 ## Without Docker
@@ -44,7 +44,7 @@ In the project directory, you can run:
 ### `yarn start`
 
 Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+Open [http://localhost:3301](http://localhost:3301) to view it in the browser.
 
 The page will reload if you make edits.\
 You will also see any lint errors in the console.
