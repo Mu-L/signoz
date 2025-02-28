@@ -1,25 +1,17 @@
-import { FetchTracesAction, FetchTraceItemAction } from "./traces";
-import { updateTraceFiltersAction } from "./traceFilters";
-
-import { serviceMapItemAction, servicesAction } from "./serviceMap";
-import { getUsageDataAction } from "./usage";
-import { updateTimeIntervalAction } from "./global";
+import { ServiceMapItemAction, ServiceMapLoading } from './serviceMap';
+import { GetUsageDataAction } from './usage';
 
 export enum ActionTypes {
-	updateTraceFilters = "UPDATE_TRACES_FILTER",
-	updateTimeInterval = "UPDATE_TIME_INTERVAL",
-	getServiceMapItems = "GET_SERVICE_MAP_ITEMS",
-	getServices = "GET_SERVICES",
-	getUsageData = "GET_USAGE_DATE",
-	fetchTraces = "FETCH_TRACES",
-	fetchTraceItem = "FETCH_TRACE_ITEM",
+	updateTimeInterval = 'UPDATE_TIME_INTERVAL',
+	getServiceMapItems = 'GET_SERVICE_MAP_ITEMS',
+	getServices = 'GET_SERVICES',
+	getUsageData = 'GET_USAGE_DATE',
+	fetchTraces = 'FETCH_TRACES',
+	fetchTraceItem = 'FETCH_TRACE_ITEM',
+	serviceMapLoading = 'UPDATE_SERVICE_MAP_LOADING',
 }
 
 export type Action =
-	| FetchTraceItemAction
-	| FetchTracesAction
-	| updateTraceFiltersAction
-	| getUsageDataAction
-	| updateTimeIntervalAction
-	| servicesAction
-	| serviceMapItemAction;
+	| GetUsageDataAction
+	| ServiceMapItemAction
+	| ServiceMapLoading;
